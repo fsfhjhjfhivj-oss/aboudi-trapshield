@@ -1,0 +1,242 @@
+openapi: 3.1.0
+info:
+  title: ids-lite API
+  version: 0.1.0
+  description: Lightweight intrusion detection and site alert addon. Base path is configurable (default /ids).
+servers:
+  - url: /ids
+security:
+  - adminBearer: []
+paths:
+  /v1/events:
+    get:
+      summary: List threat events (admin)
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: rule_id, in: query, schema: { type: string } }
+        - { name: severity, in: query, schema: { $ref: '#/components/schemas/Severity' } }
+        - { name: ip_hash, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/EventPage' } } } }
+        '401': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Ingest an event (HMAC-signed adapter call)
+      security: [ { hmacSignature: [] } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/EventIn' } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { type: object, properties: { id: { type: string }, action: { type: string }, block_id: { type: [string, 'null'] } } } } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '409': { description: Duplicate idempotency_key (returns original id) }
+        '422': { $ref: '#/components/responses/Error' }
+  /v1/adapter/evaluate:
+    post:
+      summary: Sidecar decision for non-Node frameworks (HMAC-signed)
+      security: [ { hmacSignature: [] } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ip, path]
+              properties:
+                ip: { type: string }
+                method: { type: string }
+                path: { type: string }
+                query: { type: string }
+                body: { type: string }
+                user_agent: { type: string }
+                is_login_failure: { type: boolean }
+      responses:
+        '200':
+          description: Decision to enforce in the adapter
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  action: { type: string, enum: [none, logged, warned, blocked] }
+                  retry_after: { type: [integer, 'null'] }
+                  block_id: { type: [string, 'null'] }
+                  hits: { type: array, items: { type: string } }
+  /v1/blocks:
+    get:
+      summary: List blocks (admin)
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [active, expired, lifted] } }
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/BlockPage' } } } }
+    post:
+      summary: Create a manual block (admin). Provide ip_hash or ip.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ip_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+                ip: { type: string }
+                reason: { type: string }
+                duration_sec: { type: integer, minimum: 10 }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Block' } } } }
+        '400': { description: Bad duration or attempt to block the requesting admin address }
+  /v1/blocks/{id}:
+    delete:
+      summary: Lift a block (admin)
+      parameters: [ { name: id, in: path, required: true, schema: { type: string } } ]
+      responses:
+        '200': { description: Block with status=lifted, content: { application/json: { schema: { $ref: '#/components/schemas/Block' } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /v1/settings:
+    get:
+      summary: Read settings (ETag = "v<version>")
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }
+    put:
+      summary: Replace settings (requires If-Match)
+      parameters: [ { name: If-Match, in: header, required: true, schema: { type: string, example: '"v1"' } } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } }
+      responses:
+        '200': { description: Updated }
+        '412': { description: Stale version }
+        '422': { description: Validation error }
+        '428': { description: If-Match missing }
+  /v1/admin/dashboard:
+    get:
+      summary: Dashboard aggregates (admin)
+      parameters: [ { name: range, in: query, schema: { type: string, enum: [24h, 7d, 30d], default: 24h } } ]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  range: { type: string }
+                  threat_level: { type: string, enum: [calm, elevated, critical] }
+                  totals: { type: object, properties: { events: { type: integer }, blocked: { type: integer }, active_blocks: { type: integer } } }
+                  by_rule: { type: array, items: { type: object, properties: { rule_id: { type: string }, count: { type: integer } } } }
+                  timeseries: { type: array, items: { type: object, properties: { bucket: { type: string, format: date-time }, events: { type: integer }, blocks: { type: integer } } } }
+                  top_ip_hashes: { type: array, items: { type: object, properties: { ip_hash: { type: string }, events: { type: integer }, score: { type: integer } } } }
+                  settings_version: { type: integer }
+  /v1/audit:
+    get:
+      summary: Audit log (admin)
+      responses: { '200': { description: OK } }
+  /v1/public/status:
+    get:
+      summary: Banner status for the current visitor (no auth, rate limited)
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  level: { type: string, enum: [none, notice, blocked] }
+                  message_key: { type: [string, 'null'] }
+                  block_until: { type: [string, 'null'], format: date-time }
+                  poll_after_sec: { type: integer }
+components:
+  securitySchemes:
+    adminBearer: { type: http, scheme: bearer }
+    hmacSignature:
+      type: apiKey
+      in: header
+      name: X-IDS-Signature
+      description: "sha256=hex(HMAC_SHA256(ingestSecret, X-IDS-Timestamp + '.' + rawBody)); X-IDS-Timestamp = epoch ms, +/-5 min."
+  responses:
+    Error:
+      description: Error
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  schemas:
+    Severity: { type: string, enum: [low, medium, high, critical] }
+    Error:
+      type: object
+      properties:
+        error: { type: object, properties: { code: { type: string }, message: { type: string }, details: { type: array, items: {} } } }
+    EventIn:
+      type: object
+      required: [rule_id, severity, score, ip_hash, idempotency_key]
+      properties:
+        rule_id: { type: string }
+        severity: { $ref: '#/components/schemas/Severity' }
+        score: { type: integer, minimum: 0, maximum: 100 }
+        ip_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        key_version: { type: integer }
+        method: { type: string }
+        path: { type: string }
+        evidence: { type: object, properties: { snippet: { type: string } } }
+        action: { type: string, enum: [logged, warned, blocked] }
+        ts: { type: integer, description: epoch ms }
+        idempotency_key: { type: string }
+    ThreatEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        ts: { type: string, format: date-time }
+        rule_id: { type: string }
+        severity: { $ref: '#/components/schemas/Severity' }
+        score: { type: integer }
+        ip_hash: { type: string }
+        key_version: { type: integer }
+        ip_raw: { type: [string, 'null'] }
+        user_id: { type: [string, 'null'] }
+        method: { type: string }
+        path: { type: string }
+        evidence: { type: object }
+        action: { type: string, enum: [logged, warned, blocked] }
+        block_id: { type: [string, 'null'] }
+        source: { type: string }
+    EventPage:
+      type: object
+      properties: { items: { type: array, items: { $ref: '#/components/schemas/ThreatEvent' } }, next_cursor: { type: [string, 'null'] } }
+    Block:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        ip_hash: { type: string }
+        key_version: { type: integer }
+        reason: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        created_by: { type: string }
+        status: { type: string, enum: [active, expired, lifted] }
+        lifted_by: { type: [string, 'null'] }
+        lifted_at: { type: [string, 'null'], format: date-time }
+        hit_count: { type: integer }
+    BlockPage:
+      type: object
+      properties: { items: { type: array, items: { $ref: '#/components/schemas/Block' } }, next_cursor: { type: [string, 'null'] } }
+    Settings:
+      type: object
+      properties:
+        enabled: { type: boolean, default: true }
+        mode: { type: string, enum: [monitor, warn, enforce], default: monitor }
+        sensitivity: { type: string, enum: [low, medium, high], default: medium }
+        block_duration_sec: { type: integer, default: 900 }
+        max_block_duration_sec: { type: integer, default: 86400 }
+        rules: { type: object, additionalProperties: { type: object, properties: { enabled: { type: boolean }, weight: { type: integer, minimum: 0, maximum: 100 } } } }
+        allowlist_ips: { type: array, items: { type: string }, description: IPs or CIDRs }
+        exclude_paths: { type: array, items: { type: string }, description: Glob patterns }
+        retention_days: { type: integer, default: 30 }
+        store_raw_ip: { type: boolean, default: false }
+        banner: { type: object, properties: { enabled: { type: boolean }, position: { type: string } } }
+        fail_mode: { type: string, enum: [open, closed], default: open }
+        version: { type: integer, readOnly: true }
+        updated_at: { type: [string, 'null'], readOnly: true }
+        updated_by: { type: [string, 'null'], readOnly: true }

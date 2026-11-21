@@ -1,0 +1,16 @@
+{
+  "name": "ids-lite",
+  "version": "0.1.0",
+  "description": "Lightweight intrusion detection and site alert addon: rule-based detection, temporary blocks, warning banner, audit log, REST API.",
+  "main": "src/index.js",
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "start": "node examples/express-app.js"
+  },
+  "files": ["src", "public", "docs", "openapi.yaml", "README.md", "LICENSE"],
+  "keywords": ["security", "ids", "intrusion-detection", "express", "rate-limiting", "waf-lite"],
+  "peerDependencies": { "express": ">=4" },
+  "devDependencies": { "express": "^4.19.2" }
+}
